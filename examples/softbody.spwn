@@ -1,0 +1,13 @@
+// Soft body demo: a jelly blob dropping onto a floor and a rope hanging from a pinned point.
+// Place objects in groups 10g..16g (blob) and 30g..32g (rope) in the editor first.
+sb = import softbody
+
+world = sb.world(gravity = 1800, floor = 0, restitution = 0.4)
+world.blob([10g, 11g, 12g, 13g, 14g, 15g], 400, 300, 40, center = 16g)
+world.rope([
+    world.point(30g, 100, 300, pinned = true),
+    world.point(31g, 130, 300),
+    world.point(32g, 160, 300),
+])
+world.stats()
+world.start()

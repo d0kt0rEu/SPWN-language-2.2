@@ -1,0 +1,515 @@
+// Soft body physics for Geometry Dash 2.2, written in SPWN.
+//
+//   sb = import softbody
+//   world = sb.world(gravity = 1800, floor = 0)         // units are GD units and seconds
+//   a = world.point(10g, 300, 300)                      // group + start position
+//   b = world.point(11g, 330, 300)
+//   world.spring(a, b)
+//   world.start()
+//
+// See README.md next to this file for the full API.
+
+extract obj_props
+
+// item edit operators (gd_enums.ItemTriggerOp)
+ADD = 1
+SUB = 2
+MUL = 3
+DIV = 4
+
+// item compare operators (gd_enums.ItemTriggerCompareOp)
+CMP_GTE = 2
+
+// ------------------------------------------------------------------------------------------------
+// the only place that knows how GD's item triggers behave
+//
+//   edit(t, a, b, op1, op2, mod, assign):   t  <assign>  (a <op1> b) <op2> mod       (assign 0 is "=")
+//   cmp(a, b, op, then):                    runs `then` when (a <op> b)
+// ------------------------------------------------------------------------------------------------
+
+edit = (
+    t: @item, a: @item, b: @item,
+    op1: @number = 1, op2: @number = 3, mod: @number = 1, assign: @number = 0,
+    abs: @bool = false,
+) -> @NULL {
+    item_edit(
+        item_id_1 = a, item_id_2 = b, target_item_id = t,
+        typ_1 = 1, typ_2 = 1, target_typ = 1,
+        mod = mod, assign_op = assign, op_1 = op1, op_2 = op2,
+        abs_neg_1 = 1 if abs else 0,
+        abs_neg_2 = 1 if abs else 0,
+        rounding_1 = 0, rounding_2 = 0,
+    )
+}
+
+cmp = (a: @item, b: @item, op: @number, then: @trigger_function) -> @NULL {
+    item_compare(
+        item_id_1 = a, item_id_2 = b,
+        typ_1 = 1, typ_2 = 1,
+        mod_1 = 1, mod_2 = 1, op_1 = MUL, op_2 = MUL,
+        compare_op = op, tol_pm = 0,
+        true_id = then,
+        abs_neg_1 = 0, abs_neg_2 = 0, rounding_1 = 0, rounding_2 = 0,
+    )
+}
+
+// ------------------------------------------------------------------------------------------------
+// small math helpers on top of edit(). `z` is an item that is always 0, `one` one that is always 1.
+// ------------------------------------------------------------------------------------------------
+
+// t = a * factor
+scale = (w, t: @item, a: @item, factor: @number = 1) -> @NULL {
+    edit(t, a, w.z, ADD, MUL, factor)
+}
+// t = |a|
+absval = (w, t: @item, a: @item) -> @NULL {
+    edit(t, a, w.z, ADD, MUL, 1, 0, true)
+}
+// t = min(a, b) * 1     via (a + b - |a - b|) / 2      (uses w.s_u, w.s_au, w.s_w as scratch)
+minimum = (w, t: @item, a: @item, b: @item) -> @NULL {
+    edit(w.s_u, a, b, SUB)
+    absval(w, w.s_au, w.s_u)
+    edit(w.s_w, a, b, ADD)
+    edit(t, w.s_w, w.s_au, SUB, MUL, 0.5)
+}
+// t = max(a, b)
+maximum = (w, t: @item, a: @item, b: @item) -> @NULL {
+    edit(w.s_u, a, b, SUB)
+    absval(w, w.s_au, w.s_u)
+    edit(w.s_w, a, b, ADD)
+    edit(t, w.s_w, w.s_au, ADD, MUL, 0.5)
+}
+
+// ------------------------------------------------------------------------------------------------
+// the physics step
+// ------------------------------------------------------------------------------------------------
+
+// one spring: accumulates forces into both points
+spring_forces = (w, s) -> @NULL {
+    a = s.a
+    b = s.b
+    // separation and its length (newton iterations for the square root, started at the rest length)
+    edit(w.dx, b.x, a.x, SUB)
+    edit(w.dy, b.y, a.y, SUB)
+    edit(w.t1, w.dx, w.dx, MUL)
+    edit(w.t2, w.dy, w.dy, MUL)
+    edit(w.d2, w.t1, w.t2, ADD)
+    L = s.L
+    scale(w, w.len, L)
+    for i in 0..w.sqrt_iterations {
+        edit(w.q, w.d2, w.len, DIV)
+        edit(w.len, w.len, w.q, ADD, MUL, 0.5)
+    }
+    // spring force along the separation, plus damping on the relative speed along it
+    edit(w.ext, w.len, L, SUB)
+    edit(w.dvx, b.vx, a.vx, SUB)
+    edit(w.dvy, b.vy, a.vy, SUB)
+    edit(w.p1, w.dvx, w.dx, MUL)
+    edit(w.p2, w.dvy, w.dy, MUL)
+    edit(w.pn, w.p1, w.p2, ADD)
+    edit(w.pv, w.pn, w.len, DIV)
+    scale(w, w.fa, w.ext, s.stiffness)
+    scale(w, w.fb, w.pv, s.damping)
+    edit(w.f, w.fa, w.fb, ADD)
+    edit(w.ux, w.dx, w.len, DIV)
+    edit(w.uy, w.dy, w.len, DIV)
+    edit(w.fx, w.f, w.ux, MUL)
+    edit(w.fy, w.f, w.uy, MUL)
+    if !a.pinned {
+        edit(a.fx, w.fx, w.z, ADD, MUL, a.inv_mass, ADD)
+        edit(a.fy, w.fy, w.z, ADD, MUL, a.inv_mass, ADD)
+    }
+    if !b.pinned {
+        edit(b.fx, w.fx, w.z, ADD, MUL, b.inv_mass, SUB)
+        edit(b.fy, w.fy, w.z, ADD, MUL, b.inv_mass, SUB)
+    }
+}
+
+// keeps position `pos` on one side of `limit`. `lower`: pos >= limit, otherwise pos <= limit.
+// velocity `vel` is reflected, the tangential velocity `vt` loses some speed.
+bound = (w, pos: @item, vel: @item, vt: @item, limit: @item, lower: @bool) -> @NULL {
+    if lower {
+        edit(w.d, limit, pos, SUB)
+    } else {
+        edit(w.d, pos, limit, SUB)
+    }
+    absval(w, w.ad, w.d)
+    edit(w.pen, w.d, w.ad, ADD, MUL, 0.5)                      // penetration depth (>= 0)
+    edit(pos, w.pen, w.z, ADD, MUL, 1, ADD if lower else SUB)  // push back out
+    // contact amount: min(pen * 1000, 1)
+    scale(w, w.tmp, w.pen, 1000)
+    edit(w.u, w.tmp, w.one, SUB)
+    absval(w, w.au, w.u)
+    edit(w.v, w.tmp, w.one, ADD)
+    edit(w.c, w.v, w.au, SUB, MUL, 0.5)
+    // velocity component pointing into the wall
+    absval(w, w.av, vel)
+    if lower {
+        edit(w.vn, vel, w.av, SUB, MUL, 0.5)                   // min(vel, 0)
+    } else {
+        edit(w.vn, vel, w.av, ADD, MUL, 0.5)                   // max(vel, 0)
+    }
+    edit(w.r, w.c, w.vn, MUL)
+    edit(vel, w.r, w.z, ADD, MUL, 1 + w.restitution, SUB)      // vel -= (1 + e) * contact * into
+    // friction
+    scale(w, w.fr, w.c, w.friction)
+    edit(w.keep, w.one, w.fr, SUB)
+    edit(vt, w.keep, w.z, ADD, MUL, 1, MUL)
+}
+
+// reaction to a sensor touching solid ground: reflect the velocity into it, slide with some friction and push out
+respond = (w, pos: @item, vel: @item, vt: @item, lower: @bool) -> @NULL {
+    absval(w, w.av, vel)
+    if lower {
+        edit(w.vn, vel, w.av, SUB, MUL, 0.5)                   // min(vel, 0)
+    } else {
+        edit(w.vn, vel, w.av, ADD, MUL, 0.5)                   // max(vel, 0)
+    }
+    edit(vel, w.vn, w.z, ADD, MUL, 1 + w.restitution, SUB)
+    edit(vt, w.one, w.z, ADD, MUL, 1 - w.friction, MUL)
+    edit(pos, w.one, w.z, ADD, MUL, w.push, ADD if lower else SUB)
+}
+
+// moves the point's objects so that they match its simulated position.
+// The distance to move is rounded to whole units (move triggers are cheapest that way) by peeling off
+// powers of two; what has really been moved is tracked in p.ax / p.ay.
+apply_position = (w, p) -> @NULL {
+    for axis in 0..2 {
+        pos = p.x if axis == 0 else p.y
+        applied = p.ax if axis == 0 else p.ay
+        edit(w.dd, pos, applied, SUB)
+        edit(w.q, w.dd, w.c_off, ADD)                          // q = delta + offset + 0.5, kept in [0, 2^bits)
+        minimum(w, w.q, w.q, w.c_qmax)
+        maximum(w, w.q, w.q, w.z)
+        edit(w.qc, w.q, w.z, ADD)
+        for i in w.bits..0 {
+            cmp(w.q, w.c_bit[i], CMP_GTE, !{
+                edit(w.q, w.c_bit[i], w.z, ADD, MUL, 1, SUB)
+                if axis == 0 {
+                    $.add(trigger { OBJ_ID: 901, TARGET: p.group, MOVE_X: 2^i })
+                } else {
+                    $.add(trigger { OBJ_ID: 901, TARGET: p.group, MOVE_Y: 2^i })
+                }
+            })
+        }
+        edit(w.dd, w.qc, w.q, SUB)                             // whole units that were peeled off (offset included)
+        edit(applied, w.dd, w.z, ADD, MUL, 1, ADD)
+        edit(applied, w.c_offi, w.z, ADD, MUL, 1, SUB)         // the offset is moved back by the trigger below
+    }
+    $.add(trigger { OBJ_ID: 901, TARGET: p.group, MOVE_X: -w.offset, MOVE_Y: -w.offset })
+}
+
+build_step = (w, points, springs) -> @trigger_function {
+    return !{
+        // forces: gravity
+        for p in points {
+            if !p.pinned {
+                edit(p.fx, w.z, w.z, ADD)
+                edit(p.fy, w.grav, w.z, ADD)
+            }
+        }
+        for s in springs {
+            spring_forces(w, s)
+        }
+        for p in points {
+            if !p.pinned {
+                edit(p.vx, p.fx, w.z, ADD, MUL, 1, ADD)
+                edit(p.vy, p.fy, w.z, ADD, MUL, 1, ADD)
+                if w.air != 1 {
+                    edit(p.vx, w.one, w.z, ADD, MUL, w.air, MUL)
+                    edit(p.vy, w.one, w.z, ADD, MUL, w.air, MUL)
+                }
+                edit(p.x, p.vx, w.z, ADD, MUL, 1, ADD)
+                edit(p.y, p.vy, w.z, ADD, MUL, 1, ADD)
+                if w.floor != null { bound(w, p.y, p.vy, p.vx, w.c_floor, true) }
+                if w.ceiling != null { bound(w, p.y, p.vy, p.vx, w.c_ceiling, false) }
+                if w.left != null { bound(w, p.x, p.vx, p.vy, w.c_left, true) }
+                if w.right != null { bound(w, p.x, p.vx, p.vy, w.c_right, false) }
+                if w.solid != null {
+                    for sn in p.sensors {
+                        instant_collision(sn.block, w.solid, !{
+                            if sn.axis == 0 {
+                                respond(w, p.x, p.vx, p.vy, sn.lower)
+                            } else {
+                                respond(w, p.y, p.vy, p.vx, sn.lower)
+                            }
+                        })
+                    }
+                }
+                apply_position(w, p)
+            }
+        }
+    }
+}
+
+// where the objects of a group are in the level (GD units); needs the level to contain them when compiling
+locate = (group: @group) -> [@number] {
+    found = level.objects.filter(o => GROUPS in o && group in o[GROUPS] && X in o && Y in o)
+    if found.length == 0 {
+        throw "softbody: no object in a group like " + group + " found in the level, pass x and y yourself"
+    }
+    return [found[0][X], found[0][Y]]
+}
+
+// ------------------------------------------------------------------------------------------------
+// public API
+// ------------------------------------------------------------------------------------------------
+
+world = #[desc("Creates a soft body world. Distances are GD units, times are seconds"), example(u"
+    world = softbody.world(gravity = 1800, floor = 0)
+")] (
+    #[desc("Downwards acceleration in units per second squared")] gravity: @number = 1800,
+    #[desc("Frames per second the simulation is tuned for (physics steps once per frame)")] fps: @number = 60,
+    #[desc("Y of the floor, or null for none")] floor = null,
+    #[desc("Y of the ceiling, or null for none")] ceiling = null,
+    #[desc("X of the left wall, or null for none")] left = null,
+    #[desc("X of the right wall, or null for none")] right = null,
+    #[desc("How much of the speed into a wall is kept (0 = no bounce, 1 = perfect bounce)")] restitution: @number = 0.3,
+    #[desc("Fraction of the sliding speed lost per frame in contact with a wall (0 = ice, 1 = glue)")] friction: @number = 0.05,
+    #[desc("Fraction of speed lost to air per second (0 = none)")] air_drag: @number = 0,
+    #[desc("Default spring stiffness, 0 to 1 (fraction of the stretch pulled back per frame squared)")] stiffness: @number = 0.3,
+    #[desc("Default spring damping, 0 to 1")] damping: @number = 0.05,
+    #[desc("Bits used to move objects. Objects can move up to 2^(bits-1) units per frame; fewer bits = fewer triggers")] bits: @number = 6,
+    #[desc("Newton iterations used for spring lengths (more = more accurate for very stretched springs)")] sqrt_iterations: @number = 4,
+    #[desc("Collision block id of solid level geometry that points should collide with, or null")] solid = null,
+    #[desc("How far (units per frame) a point touching solid geometry is pushed out of it")] push: @number = 1,
+) {
+    let points = []
+    let springs = []
+    let consts = []
+
+    const = (v: @number) -> @item {
+        i = ?i
+        consts.push([i, v])
+        return i
+    }
+
+    let c_bit = []
+    for i in 0..bits {
+        c_bit.push(const(2 ^ i))
+    }
+
+    w = {
+        z: ?i,
+        one: ?i,
+        const: const,
+        bits: bits,
+        offset: 2 ^ (bits - 1),
+        sqrt_iterations: sqrt_iterations,
+        solid: solid,
+        push: push,
+        restitution: restitution,
+        friction: friction,
+        floor: floor, ceiling: ceiling, left: left, right: right,
+        air: (1 - air_drag) ^ (1 / fps),
+        grav: const(-gravity / (fps * fps)),
+        c_off: const(2 ^ (bits - 1) + 0.5),
+        c_offi: const(2 ^ (bits - 1)),
+        c_qmax: const(2 ^ bits - 0.001),
+        c_bit: c_bit,
+        c_floor: const(floor if floor != null else 0),
+        c_ceiling: const(ceiling if ceiling != null else 0),
+        c_left: const(left if left != null else 0),
+        c_right: const(right if right != null else 0),
+        // scratch items
+        dx: ?i, dy: ?i, dd: ?i, qc: ?i, t1: ?i, t2: ?i, d2: ?i, len: ?i, q: ?i, ext: ?i, dvx: ?i, dvy: ?i,
+        p1: ?i, p2: ?i, pn: ?i, pv: ?i, fa: ?i, fb: ?i, f: ?i, ux: ?i, uy: ?i, fx: ?i, fy: ?i,
+        d: ?i, ad: ?i, pen: ?i, tmp: ?i, u: ?i, au: ?i, v: ?i, c: ?i, av: ?i, vn: ?i, r: ?i, fr: ?i, keep: ?i,
+        s_u: ?i, s_au: ?i, s_w: ?i,
+    }
+
+    point = #[desc("Adds a point (a particle). Its objects are the ones in `group`; they are moved to follow the simulation")] (
+        #[desc("Group with the object(s) that represent the point")] group: @group,
+        #[desc("Start X (GD units). Taken from the object in the level when left out")] x = null,
+        #[desc("Start Y (GD units). Taken from the object in the level when left out")] y = null,
+        #[desc("A pinned point never moves")] pinned: @bool = false,
+        #[desc("Mass; heavier points accelerate less from springs")] mass: @number = 1,
+        #[desc("Radius of the point for collisions with solid geometry (GD units)")] radius: @number = 10,
+    ) {
+        let pos = [x, y]
+        if x == null || y == null {
+            let l = locate(group)
+            pos = [x if x != null else l[0], y if y != null else l[1]]
+        }
+        let sensors = []
+        if solid != null && !pinned {
+            // four small collision blocks that travel with the point report what it touches
+            for sd in [[-1, 0, 0, true], [1, 0, 0, false], [0, -1, 1, true], [0, 1, 1, false]] {
+                b = ?b
+                $.add(obj {
+                    OBJ_ID: obj_ids.special.COLLISION_BLOCK,
+                    X: pos[0] + sd[0] * radius,
+                    Y: pos[1] + sd[1] * radius,
+                    BLOCK_A: b,
+                    DYNAMIC_BLOCK: true,
+                    SCALING: 0.25,
+                    GROUPS: group,
+                })
+                sensors.push({ block: b, axis: sd[2], lower: sd[3] })
+            }
+        }
+        p = {
+            group: group,
+            x0: pos[0], y0: pos[1],
+            pinned: pinned,
+            inv_mass: 1 / mass,
+            x: ?i, y: ?i, ax: ?i, ay: ?i, vx: ?i, vy: ?i, fx: ?i, fy: ?i,
+            sensors: sensors,
+        }
+        points.push(p)
+        return p
+    }
+
+    spring = #[desc("Connects two points with a spring")] (
+        a, b,
+        #[desc("Stiffness 0 to 1, defaults to the world's")] stiffness = null,
+        #[desc("Damping 0 to 1, defaults to the world's")] damping = null,
+        #[desc("Rest length in GD units. Defaults to the distance between the points at the start")] length = null,
+    ) {
+        len = length if length != null else ((b.x0 - a.x0) ^ 2 + (b.y0 - a.y0) ^ 2) ^ 0.5
+        s = {
+            a: a, b: b,
+            length: len,
+            L: const(len),
+            stiffness: stiffness if stiffness != null else default_stiffness,
+            damping: damping if damping != null else default_damping,
+        }
+        springs.push(s)
+        return s
+    }
+
+    start = #[desc("Builds the simulation and starts it. Call this last, at the start of the level")] (
+        #[desc("Group that is spawned every tick. Defaults to every frame")] driver = null,
+    ) {
+        step = build_step(w, points, springs)
+        init = !{
+            w.one.add(1)
+            for c in consts {
+                edit(c[0], w.one, w.z, ADD, MUL, c[1])
+            }
+            for p in points {
+                edit(p.x, w.one, w.z, ADD, MUL, p.x0)
+                edit(p.y, w.one, w.z, ADD, MUL, p.y0)
+                edit(p.ax, w.one, w.z, ADD, MUL, p.x0)
+                edit(p.ay, w.one, w.z, ADD, MUL, p.y0)
+            }
+        }
+        init!
+        if driver == null {
+            on(frame(), step)
+        } else {
+            $.extend_trigger_func(driver, () { step! })
+        }
+        return step
+    }
+
+    mesh = #[desc("Connects every pair of points that start closer than `max_distance` with a spring. Place objects in the editor, put each in its own group, create the points and call this to get a blob"), example(u"
+        pts = [10g, 11g, 12g, 13g].map(g => world.point(g))
+        world.mesh(pts, 50)
+    ")] (
+        #[desc("Points returned by point()")] pts,
+        #[desc("Maximum distance (GD units) between points that get connected")] max_distance: @number,
+        #[desc("Stiffness 0 to 1, defaults to the world's")] stiffness = null,
+        #[desc("Damping 0 to 1, defaults to the world's")] damping = null,
+    ) {
+        for i in 0..pts.length {
+            for j in (i + 1)..pts.length {
+                a = pts[i]
+                b = pts[j]
+                if (a.x0 - b.x0) ^ 2 + (a.y0 - b.y0) ^ 2 <= max_distance ^ 2 {
+                    spring(a, b, stiffness, damping)
+                }
+            }
+        }
+    }
+
+    rope = #[desc("Connects the points one after another with springs"), example(u"
+        pts = [10g, 11g, 12g, 13g].map(g => world.point(g))
+        world.rope(pts)
+    ")] (
+        #[desc("Points returned by point()")] pts,
+        #[desc("Stiffness 0 to 1, defaults to the world's")] stiffness = null,
+        #[desc("Damping 0 to 1, defaults to the world's")] damping = null,
+    ) {
+        for i in 1..pts.length {
+            spring(pts[i - 1], pts[i], stiffness, damping)
+        }
+    }
+
+    blob = #[desc("Creates a round soft body: a ring of points around a center point, joined by springs. Returns the points (center last)"), example(u"
+        pts = world.blob([10g, 11g, 12g, 13g, 14g, 15g, 16g, 17g, 18g], 400, 300, 40)
+    ")] (
+        #[desc("One group per point on the ring, plus one more for the center point when given as `center`")] groups,
+        #[desc("Center X (GD units)")] cx: @number,
+        #[desc("Center Y (GD units)")] cy: @number,
+        #[desc("Radius of the ring (GD units)")] radius: @number,
+        #[desc("Group for a point in the middle (keeps the shape from collapsing)")] center = null,
+        #[desc("Stiffness 0 to 1, defaults to the world's")] stiffness = null,
+        #[desc("Damping 0 to 1, defaults to the world's")] damping = null,
+    ) {
+        n = groups.length
+        let ring = []
+        for i in 0..n {
+            ang = 2 * PI * i / n
+            ring.push(point(groups[i], cx + radius * $.cos(ang), cy + radius * $.sin(ang)))
+        }
+        for i in 0..n {
+            spring(ring[i], ring[(i + 1) % n], stiffness, damping)     // the skin
+            spring(ring[i], ring[(i + 2) % n], stiffness, damping)     // resists folding
+        }
+        let out = ring
+        if center != null {
+            c = point(center, cx, cy)
+            for i in 0..n {
+                spring(c, ring[i], stiffness, damping)                   // spokes keep the volume
+            }
+            out = ring + [c]
+        }
+        return out
+    }
+
+    impulse = #[desc("Adds a velocity (units per second) to a point. Use it from your own triggers while the simulation is running"), example("world.impulse(p, 0, 600)")] (
+        p,
+        #[desc("Horizontal velocity added")] vx: @number,
+        #[desc("Vertical velocity added")] vy: @number,
+    ) {
+        edit(p.vx, w.one, w.z, ADD, MUL, vx / fps, ADD)
+        edit(p.vy, w.one, w.z, ADD, MUL, vy / fps, ADD)
+    }
+
+    set_gravity = #[desc("Changes the gravity while the simulation is running (units per second squared)"), example("world.set_gravity(0)")] (
+        g: @number,
+    ) {
+        edit(w.grav, w.one, w.z, ADD, MUL, -g / (fps * fps))
+    }
+
+    stats = #[desc("Prints how many triggers the simulation needs per frame (roughly)")] () {
+        let n = 0
+        for p in points {
+            if !p.pinned {
+                n += 90 + 16 * ((1 if floor != null else 0) + (1 if ceiling != null else 0) + (1 if left != null else 0) + (1 if right != null else 0))
+                n += 4 * p.sensors.length
+            }
+        }
+        n += springs.length * (30 + sqrt_iterations * 2)
+        $.print("softbody: ", points.length, " points, ", springs.length, " springs, about ", n, " triggers per frame")
+    }
+
+    return {
+        point: point,
+        spring: spring,
+        mesh: mesh,
+        rope: rope,
+        blob: blob,
+        impulse: impulse,
+        set_gravity: set_gravity,
+        stats: stats,
+        start: start,
+    }
+}
+
+return {
+    world: world,
+    edit: edit,
+    cmp: cmp,
+}

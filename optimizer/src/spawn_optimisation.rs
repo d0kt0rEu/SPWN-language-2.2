@@ -214,7 +214,7 @@ pub(crate) fn spawn_optimisation(
         } else {
             delay.delay
         };
-        let mut plain_trigger = |network| {
+        let mut plain_trigger = |network, objects: &mut Triggerlist| {
             create_spawn_trigger(
                 trigger,
                 end,
@@ -227,14 +227,20 @@ pub(crate) fn spawn_optimisation(
             )
         };
 
-        let mut insert_to_swaps = |a: Group, b: Group, objects: &mut Triggerlist| {
+        // returns false (and changes nothing) if `a` was already swapped away by an earlier
+        // spawn trigger, in which case the caller keeps the spawn trigger instead
+        let mut insert_to_swaps = |a: Group, b: Group, objects: &mut Triggerlist| -> bool {
+            if swaps.contains_key(&a) {
+                return false;
+            }
             let order = objects[trigger.obj].1;
             for v in swaps.values_mut() {
                 if v.0 == a {
                     *v = (b, order);
                 }
             }
-            assert!(swaps.insert(a, (b, order)).is_none());
+            swaps.insert(a, (b, order));
+            true
         };
 
         let default = &AHashSet::default();
@@ -259,19 +265,23 @@ pub(crate) fn spawn_optimisation(
                 && toggle_groups.toggles_off.contains_key(&end))
             || toggle_groups.stops.contains_key(&end)
         {
-            plain_trigger(network)
+            plain_trigger(network, objects)
         } else if d == 0 && !is_start_group(end, reserved) && network.map[&end].connections_in == 1
         {
             //dbg!(end, start);
-            insert_to_swaps(end, start, objects);
+            if !insert_to_swaps(end, start, objects) {
+                plain_trigger(network, objects)
+            }
         } else if d == 0 && !is_start_group(start, reserved)
                 && network.map[&start].connections_in == 1 //??
                 && (network.map[&start].triggers.is_empty()
                     || network.map[&start].triggers.iter().all(|t| t.deleted))
         {
-            insert_to_swaps(start, end, objects);
+            if !insert_to_swaps(start, end, objects) {
+                plain_trigger(network, objects)
+            }
         } else {
-            plain_trigger(network)
+            plain_trigger(network, objects)
         }
     }
     //dbg!(&swaps);
