@@ -19,6 +19,9 @@ et = (id: @number) {
     return @easing_type::{id}
 }
 
+//2.2 additions (generated)
+gd22 = import "constants_gd22.spwn"
+
 //object key
 ok = (id: @number, pat: @pattern | @type_indicator, name: @string) {
     return @object_key::{id, pattern: pat, name}
@@ -99,8 +102,11 @@ return {
         GROUND2: 1009c,
     },
     
+    gd_enums: gd22.gd_enums,
+
     obj_ids: {
         triggers: {
+            ..gd22.obj_ids.triggers,
             MOVE: 901,
             ROTATE: 1346,
             ANIMATE: 1585,
@@ -150,6 +156,7 @@ return {
             SPEED_RED: 1334,
         },
         special: {
+            ..gd22.obj_ids.special,
             COLLISION_BLOCK: 1816,
 
             J_BLOCK: 1813,
@@ -165,6 +172,7 @@ return {
     },
 
     obj_props : {
+        ..gd22.obj_props,
         OBJ_ID: ok(1, @number, "OBJ_ID"),
         X: ok(2, @number, "X"),
         Y: ok(3, @number, "Y"),

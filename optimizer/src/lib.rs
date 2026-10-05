@@ -41,6 +41,41 @@ mod obj_ids {
     pub const SHOW: u16 = 1613;
 }
 
+/// Whether the optimizer has a model for this kind of trigger (how it activates groups, whether
+/// it can be merged, etc.). Every other trigger (like the 2.2 triggers) is treated as opaque:
+/// any group it refers to is considered to be used from outside the trigger network, and
+/// groups containing it are never merged with other groups, since such triggers can be
+/// stateful (random, sequence, timers, item edits...) or cumulative (scale...).
+pub fn is_modeled_trigger(id: u16) -> bool {
+    matches!(
+        id,
+        obj_ids::MOVE
+            | obj_ids::ROTATE
+            | obj_ids::ANIMATE
+            | obj_ids::PULSE
+            | obj_ids::COUNT
+            | obj_ids::ALPHA
+            | obj_ids::TOGGLE
+            | obj_ids::FOLLOW
+            | obj_ids::SPAWN
+            | obj_ids::STOP
+            | obj_ids::TOUCH
+            | obj_ids::INSTANT_COUNT
+            | obj_ids::ON_DEATH
+            | obj_ids::FOLLOW_PLAYER_Y
+            | obj_ids::COLLISION
+            | obj_ids::PICKUP
+            | obj_ids::BG_EFFECT_ON
+            | obj_ids::BG_EFFECT_OFF
+            | obj_ids::SHAKE
+            | obj_ids::COLOR
+            | obj_ids::ENABLE_TRAIL
+            | obj_ids::DISABLE_TRAIL
+            | obj_ids::HIDE
+            | obj_ids::SHOW
+    )
+}
+
 pub mod obj_props {
     pub const TARGET: u16 = 51;
     pub const GROUPS: u16 = 57;
@@ -93,6 +128,9 @@ impl ReservedIds {
                     leveldata::ObjParam::GroupList(g) => {
                         reserved.object_groups.extend(g.iter().map(|g| g.id));
                     }
+                    leveldata::ObjParam::GroupPairs(g) => {
+                        reserved.object_groups.extend(g.iter().map(|(g, _)| g.id));
+                    }
 
                     leveldata::ObjParam::Color(g) => {
                         reserved.object_colors.insert(g.id);
@@ -112,6 +150,34 @@ impl ReservedIds {
 
         for fn_id in func_ids {
             for (trigger, _) in &fn_id.obj_list {
+                // groups referenced by triggers the optimizer doesnt model (random, sequence,
+                // item compare...) are activated in ways it cant see, so they must never be
+                // merged, renamed or removed
+                let trigger_id = match trigger.params.get(&1) {
+                    Some(ObjParam::Number(n)) => *n as u16,
+                    _ => 0,
+                };
+                if !is_modeled_trigger(trigger_id) {
+                    for (prop, param) in trigger.params.iter() {
+                        // the groups the trigger itself is in
+                        if *prop == obj_props::GROUPS {
+                            continue;
+                        }
+                        match param {
+                            ObjParam::Group(g) => {
+                                reserved.object_groups.insert(g.id);
+                            }
+                            ObjParam::GroupList(l) => {
+                                reserved.object_groups.extend(l.iter().map(|g| g.id));
+                            }
+                            ObjParam::GroupPairs(l) => {
+                                reserved.object_groups.extend(l.iter().map(|(g, _)| g.id));
+                            }
+                            _ => (),
+                        }
+                    }
+                }
+
                 for (prop, param) in trigger.params.iter() {
                     if *prop == 57 {
                         match &param {

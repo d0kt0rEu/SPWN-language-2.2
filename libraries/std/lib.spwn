@@ -21,6 +21,7 @@ import "range.spwn"
 import "set.spwn"
 import "log.spwn"
 import "path.spwn"
+gd22 = import "gd22.spwn"
 level_info = import "level_info.spwn"
 
 chroma = import "chroma.spwn"
@@ -37,6 +38,7 @@ return {
     ..events,
     ..ctrl_flow,
     ..frames,
+    ..gd22,
 
     PI: constants.PI,
     EULER: constants.EULER,
@@ -44,6 +46,7 @@ return {
     counter: @counter::new,
     obj_props: constants.obj_props,
     obj_ids: constants.obj_ids,
+    gd_enums: constants.gd_enums,
     open: @file::new,
     path: @path::new,
     regex: @regex::new,

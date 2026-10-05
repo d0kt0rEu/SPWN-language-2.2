@@ -335,6 +335,13 @@ pub fn replace_groups(table: Swaps, objects: &mut Triggerlist) {
                             }
                         }
                     }
+                    ObjParam::GroupPairs(list) => {
+                        for (g, _) in list {
+                            if let Some(to) = map.get_mut(&g) {
+                                *g = to.1;
+                            }
+                        }
+                    }
                     _ => (),
                 }
             }

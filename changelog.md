@@ -1,3 +1,12 @@
+# Unreleased
+
+- Geometry Dash 2.2 support: functions for the 2.2 triggers (cameras, shaders, keyframes, random / advanced random /
+  sequence, item edit / compare / persistent, timers, area and advanced follow, collision state, audio, options, UI,
+  gradient, enter effects, ...), `gd_enums`, ~540 new `obj_props`, group-pair properties, `$.as_trigger`.
+  See `tools/gd22/README.md`.
+- Level reading no longer panics on unknown or malformed properties.
+- Fixed a crash (dangling pointer in the compiler context) on current Rust versions.
+
 # Current Version: 0.8 beta
 
 ## Breaking Changes

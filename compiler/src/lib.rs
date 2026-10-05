@@ -6,6 +6,7 @@ pub mod builtins;
 pub mod compiler;
 pub mod compiler_types;
 pub mod context;
+pub mod gd_props;
 pub mod globals;
 pub mod leveldata;
 pub mod parse_levelstring;

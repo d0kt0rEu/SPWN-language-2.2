@@ -103,6 +103,74 @@ pub fn context_trigger(context: &Context, uid_counter: &mut usize) -> GdObj {
     }
 }
 
+/// Converts a SPWN array into an object parameter: either a list of groups, or a list of
+/// `[group, number]` pairs (used by e.g. the advanced random and sequence triggers)
+pub fn array_to_obj_param(
+    a: &[StoredValue],
+    globals: &Globals,
+    info: &CompilerInfo,
+) -> Result<ObjParam, RuntimeError> {
+    fn as_group(v: &Value) -> Option<Group> {
+        match v {
+            Value::Group(g) => Some(*g),
+            Value::TriggerFunc(f) => Some(f.start_group),
+            _ => None,
+        }
+    }
+
+    let is_pairs = matches!(a.first().map(|s| &globals.stored_values[*s]), Some(Value::Array(_)));
+
+    if is_pairs {
+        let mut out = Vec::new();
+        for s in a {
+            let pair = match &globals.stored_values[*s] {
+                Value::Array(p) if p.len() == 2 => p,
+                _ => {
+                    return Err(RuntimeError::CustomError(create_error(
+                        info.clone(),
+                        "Lists of pairs in object parameters must only contain `[group, number]` pairs",
+                        &[],
+                        None,
+                    )))
+                }
+            };
+            let group = as_group(&globals.stored_values[pair[0]]);
+            let number = match globals.stored_values[pair[1]] {
+                Value::Number(n) => Some(n),
+                _ => None,
+            };
+            match (group, number) {
+                (Some(g), Some(n)) => out.push((g, n)),
+                _ => {
+                    return Err(RuntimeError::CustomError(create_error(
+                        info.clone(),
+                        "Lists of pairs in object parameters must only contain `[group, number]` pairs",
+                        &[],
+                        None,
+                    )))
+                }
+            }
+        }
+        Ok(ObjParam::GroupPairs(out))
+    } else {
+        let mut out = Vec::new();
+        for s in a {
+            match as_group(&globals.stored_values[*s]) {
+                Some(g) => out.push(g),
+                None => {
+                    return Err(RuntimeError::CustomError(create_error(
+                        info.clone(),
+                        "Arrays in object parameters can only contain groups (or [group, number] pairs)",
+                        &[],
+                        None,
+                    )))
+                }
+            }
+        }
+        Ok(ObjParam::GroupList(out))
+    }
+}
+
 pub type ArbitraryId = u16;
 pub type SpecificId = u16;
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -1093,6 +1161,17 @@ $.assert(arr == [1])
         Value::Array(output)
     }
 
+    [AsTrigger] #[safe = true, desc = "Converts an @object into a @trigger, so that adding it with `$.add` makes it part of the current trigger function (spawn triggered, with the context's group). Group ID and spawn triggered properties of the object are dropped.", example = "
+extract obj_props
+$.add($.as_trigger(obj { OBJ_ID: 901, TARGET: 1g, MOVE_X: 30 }))
+    "]
+    fn as_trigger((o, _m): Obj) {
+        Value::Obj(
+            o.into_iter().filter(|(k, _)| *k != 57 && *k != 62).collect(),
+            ObjectMode::Trigger,
+        )
+    }
+
     [EditObj] #[safe = true, desc = "Changes the value of an object key. You can also use `object.set(key, value)`", example = "
 extract obj_props
 let object = color_trigger(BG, 0, 0, 0, 0.5)
@@ -1208,24 +1287,7 @@ $.edit_obj(object, X, 600)
 
                 Value::Bool(b) => ObjParam::Bool(*b),
 
-                Value::Array(a) => {
-                    ObjParam::GroupList({
-                        let mut out = Vec::new();
-                        for s in a {
-                            out.push(match globals.stored_values[*s] {
-                            Value::Group(g) => g,
-                            _ => return Err(RuntimeError::CustomError(create_error(
-                                info,
-                                "Arrays in object parameters can only contain groups",
-                                &[],
-                                None,
-                            )))
-                        })
-                        }
-
-                        out
-                    })
-                }
+                Value::Array(a) => array_to_obj_param(a, globals, &info)?,
                 obj @ Value::Dict(_) => {
                     let typ = obj.member(globals.TYPE_MEMBER_NAME, context, globals, info.clone()).unwrap();
                     if globals.stored_values[typ] == Value::TypeIndicator(20) {

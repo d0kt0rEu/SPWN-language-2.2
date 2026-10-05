@@ -41,9 +41,18 @@ pub enum FullContext {
 
 impl FullContext {
     pub fn new(globals: &Globals) -> Self {
-        let mut new = FullContext::Single(Context::new(globals));
-        new.inner().root_context_ptr = &mut new;
-        new
+        // NOTE: the root context pointer can't be set here, because the value is moved
+        // out of this function (a pointer to the local would dangle, and was only valid
+        // by accident on compilers that elided the move). Callers must call
+        // `init_root_ptr` once the context is in its final location.
+        FullContext::Single(Context::new(globals))
+    }
+
+    /// Points the root context pointer at `self`. Must be called after the context has
+    /// been stored in its final location, and `self` must not be moved afterwards.
+    pub fn init_root_ptr(&mut self) {
+        let ptr: *mut FullContext = self;
+        self.inner().root_context_ptr = ptr;
     }
     pub fn inner(&mut self) -> &mut Context {
         match self {

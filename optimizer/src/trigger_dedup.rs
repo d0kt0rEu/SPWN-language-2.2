@@ -59,6 +59,19 @@ pub(crate) fn param_identifier(param: &ObjParam) -> String {
             out.pop();
             out
         }
+        ObjParam::GroupPairs(list) => {
+            let mut out = String::new();
+
+            for (g, n) in list {
+                match g.id {
+                    Id::Specific(id) => out += &format!("{}.", id),
+                    Id::Arbitrary(id) => out += &format!("?{}.", id),
+                }
+                out += &format!("{}.", n);
+            }
+            out.pop();
+            out
+        }
         ObjParam::Epsilon => "0.050".to_string(),
     };
     str
@@ -181,7 +194,9 @@ pub(crate) fn dedup_triggers(
                 let obj = &objects[t.obj].0;
                 if let Some(ObjParam::Number(n)) = obj.params.get(&1) {
                     let id = *n as u16;
-                    id == obj_ids::MOVE || id == 1817
+                    // move and pickup triggers stack, and triggers the optimizer doesnt model
+                    // can be stateful or cumulative, so groups with them are never merged
+                    id == obj_ids::MOVE || id == 1817 || !crate::is_modeled_trigger(id)
                 } else {
                     false
                 }

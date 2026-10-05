@@ -1,7 +1,78 @@
 use crate::builtins::{Block, Group, Id, Item};
+use crate::gd_props::{kind_of, Kind};
 use crate::{builtins::Color, leveldata::ObjParam, value::Value};
 use errors::RuntimeError;
 use parser::ast::ObjectMode;
+
+fn id16(val: &str) -> Option<u16> {
+    val.trim().parse::<u16>().ok()
+}
+
+/// Reads one property value according to what the property holds for this object.
+/// Anything that doesn't look like what it should be is kept as text instead of failing,
+/// so levels containing unknown or malformed properties can still be loaded.
+fn parse_value(kind: Kind, val: &str) -> ObjParam {
+    let fallback = || ObjParam::Text(val.to_string());
+    match kind {
+        Kind::Bool => ObjParam::Bool(val.trim() == "1"),
+        Kind::Text => ObjParam::Text(val.to_string()),
+        Kind::Group => id16(val).map_or_else(fallback, |id| {
+            ObjParam::Group(Group {
+                id: Id::Specific(id),
+            })
+        }),
+        Kind::Color => id16(val).map_or_else(fallback, |id| {
+            ObjParam::Color(Color {
+                id: Id::Specific(id),
+            })
+        }),
+        Kind::Block => id16(val).map_or_else(fallback, |id| {
+            ObjParam::Block(Block {
+                id: Id::Specific(id),
+            })
+        }),
+        Kind::Item => id16(val).map_or_else(fallback, |id| {
+            ObjParam::Item(Item {
+                id: Id::Specific(id),
+            })
+        }),
+        Kind::GroupList => {
+            let groups: Option<Vec<Group>> = val
+                .split('.')
+                .map(|g| {
+                    id16(g).map(|id| Group {
+                        id: Id::Specific(id),
+                    })
+                })
+                .collect();
+            groups.map_or_else(fallback, ObjParam::GroupList)
+        }
+        Kind::GroupPairs => {
+            let parts: Vec<&str> = val.split('.').collect();
+            if parts.len() % 2 != 0 {
+                return fallback();
+            }
+            let pairs: Option<Vec<(Group, f64)>> = parts
+                .chunks(2)
+                .map(|c| {
+                    let g = id16(c[0])?;
+                    let n = c[1].trim().parse::<f64>().ok()?;
+                    Some((
+                        Group {
+                            id: Id::Specific(g),
+                        },
+                        n,
+                    ))
+                })
+                .collect();
+            pairs.map_or_else(fallback, ObjParam::GroupPairs)
+        }
+        Kind::Number => val
+            .trim()
+            .parse::<f64>()
+            .map_or_else(|_| fallback(), ObjParam::Number),
+    }
+}
 
 pub fn parse_levelstring(ls: &str) -> Result<Vec<Value>, RuntimeError> {
     let mut obj_strings = ls.split(';');
@@ -11,82 +82,43 @@ pub fn parse_levelstring(ls: &str) -> Result<Vec<Value>, RuntimeError> {
         if obj_string.is_empty() {
             continue;
         }
-        let key_val = obj_string.split(',').collect::<Vec<&str>>();
-        let mut group_51 = false;
+        let parts = obj_string.split(',').collect::<Vec<&str>>();
+        let pairs: Vec<(&str, &str)> = parts.chunks_exact(2).map(|c| (c[0], c[1])).collect();
 
-        {
-            let mut key_val_iter = key_val.iter();
-            while let Some(key) = key_val_iter.next() {
-                let val = key_val_iter.next().unwrap();
-                if *key == "52" && *val == "1" {
-                    group_51 = true;
-                }
-            }
-        }
+        let obj_id = pairs
+            .iter()
+            .find(|(k, _)| *k == "1")
+            .and_then(|(_, v)| id16(v))
+            .unwrap_or(0);
+        // the pulse trigger's target is a group when its group mode (52) is set, a color otherwise
+        let pulse_group_mode = pairs.iter().any(|(k, v)| *k == "52" && *v == "1");
 
         let mut obj = Vec::new();
-        let mut obj_id = 0;
+        for (key, val) in pairs {
+            let key = match key.parse::<u16>() {
+                Ok(k) => k,
+                Err(_) => continue,
+            };
 
-        let mut key_val_iter = key_val.iter();
-
-        while let Some(key) = key_val_iter.next() {
-            let key = key.parse::<u16>().unwrap();
-            let val = key_val_iter.next().unwrap();
-
-            let prop = match key {
-                1 => {
-                    obj_id = val.parse::<u16>().unwrap();
-                    ObjParam::Number(obj_id as f64)
-                }
-                4 | 5 | 11 | 13 | 15 | 16 | 17 | 34 | 41 | 42 | 48 | 56 | 58 | 59 | 60 | 62
-                | 64 | 65 | 66 | 67 | 70 | 81 | 86 | 87 | 89 | 93 | 94 | 96 | 98 | 104 | 100
-                | 102 | 103 | 106 | 36 => ObjParam::Bool(val.trim() == "1"),
-                21 | 22 | 23 | 50 => ObjParam::Color(Color {
-                    id: Id::Specific(val.parse::<u16>().unwrap()),
-                }),
-                31 | 43 | 44 | 49 => ObjParam::Text(val.to_string()),
-                71 => ObjParam::Group(Group {
-                    id: Id::Specific(val.parse::<u16>().unwrap()),
-                }),
-                95 => ObjParam::Block(Block {
-                    id: Id::Specific(val.parse::<u16>().unwrap()),
-                }),
-
-                57 => ObjParam::GroupList(
-                    val.split('.')
-                        .map(|g| Group {
-                            id: Id::Specific(g.parse::<u16>().unwrap()),
-                        })
-                        .collect::<Vec<_>>(),
-                ),
-                80 => match obj_id {
-                    1815 => ObjParam::Block(Block {
-                        id: Id::Specific(val.parse::<u16>().unwrap()),
-                    }),
-                    _ => ObjParam::Item(Item {
-                        id: Id::Specific(val.parse::<u16>().unwrap()),
-                    }),
-                },
-                51 => match obj_id {
-                    1006 => {
-                        if group_51 {
-                            ObjParam::Group(Group {
-                                id: Id::Specific(val.parse::<u16>().unwrap()),
-                            })
-                        } else {
-                            ObjParam::Color(Color {
-                                id: Id::Specific(val.parse::<u16>().unwrap()),
-                            })
-                        }
-                    }
-                    899 => ObjParam::Color(Color {
-                        id: Id::Specific(val.parse::<u16>().unwrap()),
-                    }),
-                    _ => ObjParam::Group(Group {
-                        id: Id::Specific(val.parse::<u16>().unwrap()),
-                    }),
-                },
-                _ => ObjParam::Number(val.parse::<f64>().unwrap()),
+            let prop = if key == 1 {
+                ObjParam::Number(obj_id as f64)
+            } else if obj_id == 1006 && key == 51 {
+                parse_value(
+                    if pulse_group_mode {
+                        Kind::Group
+                    } else {
+                        Kind::Color
+                    },
+                    val,
+                )
+            } else if obj_id == 899 && key == 51 {
+                // legacy colour trigger target
+                parse_value(Kind::Color, val)
+            } else if obj_id == 1615 && key == 80 {
+                // counter display: the item id is a plain number there
+                parse_value(Kind::Item, val)
+            } else {
+                parse_value(kind_of(obj_id, key), val)
             };
             obj.push((key, prop));
         }

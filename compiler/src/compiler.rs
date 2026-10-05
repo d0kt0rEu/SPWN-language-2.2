@@ -62,6 +62,7 @@ pub fn compile_spwn(
     //     )));
     // }
     let mut start_context = FullContext::new(&globals);
+    start_context.init_root_ptr();
     //store at pos 0
     // store_value(Value::Builtins, 1, &mut globals, &start_context);
     // store_value(Value::Null, 1, &mut globals, &start_context);
@@ -1811,6 +1812,7 @@ pub fn import_module(
         };
 
     let mut start_context = FullContext::new(globals);
+    start_context.init_root_ptr();
 
     globals.push_new_preserved();
     for c in contexts.with_breaks() {

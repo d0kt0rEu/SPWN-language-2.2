@@ -1474,6 +1474,33 @@ pub fn convert_type(
                                 Value::Array(out)
                             }
 
+                            ObjParam::GroupPairs(g) => {
+                                let mut out = Vec::new();
+                                for (group, number) in g {
+                                    let pair = vec![
+                                        store_const_value(
+                                            Value::Group(*group),
+                                            globals,
+                                            context.start_group,
+                                            info.position,
+                                        ),
+                                        store_const_value(
+                                            Value::Number(*number),
+                                            globals,
+                                            context.start_group,
+                                            info.position,
+                                        ),
+                                    ];
+                                    out.push(store_const_value(
+                                        Value::Array(pair),
+                                        globals,
+                                        context.start_group,
+                                        info.position,
+                                    ));
+                                }
+                                Value::Array(out)
+                            }
+
                             ObjParam::Epsilon => {
                                 let mut map = AHashMap::<
                                     LocalIntern<String>,
@@ -3059,22 +3086,7 @@ impl VariableFuncs for ast::Variable {
 
                                         Value::Bool(b) => ObjParam::Bool(*b),
 
-                                        Value::Array(a) => ObjParam::GroupList({
-                                            let mut out = Vec::new();
-                                            for s in a {
-                                                out.push(match globals.stored_values[*s] {
-                                                    Value::Group(g) => g,
-                                                    _ => return Err(RuntimeError::CustomError(create_error(
-                                                        info,
-                                                        "Arrays in object parameters can only contain groups",
-                                                        &[],
-                                                        None,
-                                                    )))
-                                                })
-                                            }
-
-                                            out
-                                        }),
+                                        Value::Array(a) => array_to_obj_param(a, globals, &info)?,
                                         Value::Dict(d) => {
                                             if let Some(t) = d.get(&globals.TYPE_MEMBER_NAME) {
                                                 if let Value::TypeIndicator(t) = globals.stored_values[*t] {
@@ -3507,6 +3519,33 @@ impl VariableFuncs for ast::Variable {
                                                                     info.position,
                                                                 );
                                                                 out.push(stored);
+                                                            }
+                                                            Value::Array(out)
+                                                        }
+
+                                                        ObjParam::GroupPairs(g) => {
+                                                            let mut out = Vec::new();
+                                                            for (group, number) in g {
+                                                                let pair = vec![
+                                                                    store_const_value(
+                                                                        Value::Group(*group),
+                                                                        globals,
+                                                                        full_context.inner().start_group,
+                                                                        info.position,
+                                                                    ),
+                                                                    store_const_value(
+                                                                        Value::Number(*number),
+                                                                        globals,
+                                                                        full_context.inner().start_group,
+                                                                        info.position,
+                                                                    ),
+                                                                ];
+                                                                out.push(store_const_value(
+                                                                    Value::Array(pair),
+                                                                    globals,
+                                                                    full_context.inner().start_group,
+                                                                    info.position,
+                                                                ));
                                                             }
                                                             Value::Array(out)
                                                         }

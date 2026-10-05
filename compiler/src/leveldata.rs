@@ -19,7 +19,20 @@ pub enum ObjParam {
     Bool(bool),
     Text(String),
     GroupList(Vec<Group>),
+    /// A list of (group, number) pairs, serialized as `group.number.group.number`.
+    /// Used by properties like the Advanced Random trigger's weights and the Sequence
+    /// trigger's counts, so the group ids inside still get resolved like any other group.
+    GroupPairs(Vec<(Group, f64)>),
     Epsilon,
+}
+
+/// Formats a number the way GD level strings expect it
+fn format_number(n: f64) -> String {
+    if n.fract().abs() < 0.001 {
+        format!("{}", n as i32)
+    } else {
+        format!("{:.1$}", n, 3)
+    }
 }
 // this is so bruh
 #[allow(clippy::derive_hash_xor_eq)]
@@ -34,6 +47,12 @@ impl Hash for ObjParam {
             ObjParam::Bool(v) => v.hash(state),
             ObjParam::Text(v) => v.hash(state),
             ObjParam::GroupList(v) => v.hash(state),
+            ObjParam::GroupPairs(v) => {
+                for (g, n) in v {
+                    g.hash(state);
+                    n.to_ne_bytes().hash(state);
+                }
+            }
             ObjParam::Epsilon => "epsilon".hash(state),
         }
     }
@@ -82,13 +101,7 @@ impl fmt::Display for ObjParam {
                 Id::Specific(id) => write!(f, "{}", id),
                 _ => write!(f, "0"),
             },
-            ObjParam::Number(n) => {
-                if n.fract().abs() < 0.001 {
-                    write!(f, "{}", *n as i32)
-                } else {
-                    write!(f, "{:.1$}", n, 3)
-                }
-            }
+            ObjParam::Number(n) => write!(f, "{}", format_number(*n)),
             ObjParam::Bool(b) => write!(f, "{}", if *b { "1" } else { "0" }),
             ObjParam::Text(t) => write!(f, "{}", t),
             ObjParam::GroupList(list) => {
@@ -100,6 +113,20 @@ impl fmt::Display for ObjParam {
                     } else {
                         out += "0."
                     };
+                }
+                out.pop();
+                write!(f, "{}", out)
+            }
+            ObjParam::GroupPairs(list) => {
+                let mut out = String::new();
+
+                for (g, n) in list {
+                    if let Id::Specific(id) = g.id {
+                        out += &(id.to_string() + ".")
+                    } else {
+                        out += "0."
+                    };
+                    out += &(format_number(*n) + ".");
                 }
                 out.pop();
                 write!(f, "{}", out)
@@ -129,71 +156,71 @@ impl GdObj {
 }
 
 pub fn get_used_ids(ls: &str) -> [AHashSet<u16>; 4] {
+    use crate::gd_props::{kind_of, Kind};
+
     let mut out = [
         AHashSet::<u16>::default(),
         AHashSet::<u16>::default(),
         AHashSet::<u16>::default(),
         AHashSet::<u16>::default(),
     ];
+
+    // class indexes into `out`
+    const GROUPS: usize = 0;
+    const COLORS: usize = 1;
+    const BLOCKS: usize = 2;
+    const ITEMS: usize = 3;
+
     let objects = ls.split(';');
     for obj in objects {
         let props: Vec<&str> = obj.split(',').collect();
-        let mut map = AHashMap::default();
+        let mut map: AHashMap<u16, &str> = AHashMap::default();
 
-        for i in (0..props.len() - 1).step_by(2) {
-            map.insert(props[i], props[i + 1]);
+        for i in (0..props.len().saturating_sub(1)).step_by(2) {
+            if let Ok(key) = props[i].trim().parse::<u16>() {
+                map.insert(key, props[i + 1]);
+            }
         }
 
-        for (key, value) in &map {
-            match *key {
-                "57" => {
-                    //GROUPS
-                    let groups = value.split('.');
-                    for g in groups {
-                        let group = g.parse().unwrap();
+        let obj_id = map
+            .get(&1)
+            .and_then(|v| v.trim().parse::<u16>().ok())
+            .unwrap_or(0);
 
-                        out[0].insert(group);
-                    }
+        for (&key, &value) in &map {
+            // the pulse trigger's target is either a group or a color, depending on its target type
+            let kind = if obj_id == 1006 && key == 51 {
+                if map.get(&52) == Some(&"1") {
+                    Kind::Group
+                } else {
+                    Kind::Color
                 }
-                "51" => {
-                    match (map.get("1"), map.get("52")) {
-                        (Some(&"1006"), Some(&"1")) => out[0].insert(value.parse().unwrap()),
-                        (Some(&"1006"), _) => out[1].insert(value.parse().unwrap()),
-                        _ => out[0].insert(value.parse().unwrap()),
-                    };
-                }
-                "71" => {
-                    out[0].insert(value.parse().unwrap());
-                }
-                //colors
-                "21" => {
-                    out[1].insert(value.parse().unwrap());
-                }
-                "22" => {
-                    out[1].insert(value.parse().unwrap());
-                }
-                "23" => {
-                    out[1].insert(value.parse().unwrap());
-                }
+            } else {
+                kind_of(obj_id, key)
+            };
 
-                "80" => {
-                    match map.get("1") {
-                        //if collision trigger or block, add block id
-                        Some(&"1815") | Some(&"1816") => out[2].insert(value.parse().unwrap()),
-                        //counter display => do nothing
-                        Some(&"1615") => false,
-                        // else add item id
-                        _ => out[3].insert(value.parse().unwrap()),
-                    };
-                }
+            // counter displays dont reserve their item id
+            if obj_id == 1615 && key == 80 {
+                continue;
+            }
 
-                "95" => {
-                    out[2].insert(value.parse().unwrap());
+            let (class, pairs) = match kind {
+                Kind::Group | Kind::GroupList => (GROUPS, false),
+                Kind::GroupPairs => (GROUPS, true),
+                Kind::Color => (COLORS, false),
+                Kind::Block => (BLOCKS, false),
+                Kind::Item => (ITEMS, false),
+                _ => continue,
+            };
+
+            // lists are period separated, pairs only reserve every other value
+            for (i, id) in value.split('.').enumerate() {
+                if pairs && i % 2 == 1 {
+                    continue;
                 }
-                //some of these depends on what object it is
-                //pulse target depends on group mode/color mode
-                //figure this out, future me
-                _ => (),
+                if let Ok(id) = id.trim().parse::<u16>() {
+                    out[class].insert(id);
+                }
             }
         }
     }
@@ -258,6 +285,11 @@ pub fn append_objects(
 
                     id = l.iter().map(|g| g.id).collect();
                 }
+                ObjParam::GroupPairs(l) => {
+                    class_index = 0;
+
+                    id = l.iter().map(|(g, _)| g.id).collect();
+                }
                 ObjParam::Color(g) => {
                     class_index = 1;
                     id = vec![g.id];
@@ -305,6 +337,10 @@ pub fn append_objects(
                 ObjParam::GroupList(g) => {
                     class_index = 0;
                     ids = g.iter_mut().map(|x| &mut x.id).collect();
+                }
+                ObjParam::GroupPairs(g) => {
+                    class_index = 0;
+                    ids = g.iter_mut().map(|(x, _)| &mut x.id).collect();
                 }
                 ObjParam::Color(g) => {
                     class_index = 1;
