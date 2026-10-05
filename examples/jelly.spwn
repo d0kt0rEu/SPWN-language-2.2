@@ -1,0 +1,13 @@
+sb = import softbody
+
+world = sb.world(gravity = 1800, floor = 15, restitution = 0.4)
+pts = [
+    world.point(10g, 285, 285),
+    world.point(11g, 345, 285),
+    world.point(12g, 345, 345),
+    world.point(13g, 285, 345),
+    world.point(14g, 315, 315),
+]
+world.mesh(pts, 90)
+world.stats()
+world.start()
